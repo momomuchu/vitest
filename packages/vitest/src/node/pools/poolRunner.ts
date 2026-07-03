@@ -391,9 +391,14 @@ export class PoolRunner {
 
   private waitForStart() {
     return new Promise<void>((resolve, reject) => {
-      const onStart = (message: WorkerResponse) => {
+      const cleanup = () => {
+        this.off('message', onStart)
+        this.off('error', onError)
+      }
+
+      function onStart(message: WorkerResponse) {
         if (message.type === 'started') {
-          this.off('message', onStart)
+          cleanup()
           if (message.error) {
             reject(message.error)
           }
@@ -403,7 +408,16 @@ export class PoolRunner {
         }
       }
 
+      // The worker can die before it ever reports back (e.g. an invalid
+      // `execArgv` makes Node exit immediately). Reject as soon as that
+      // happens instead of waiting for the start timeout to elapse.
+      function onError(error: Error) {
+        cleanup()
+        reject(error)
+      }
+
       this.on('message', onStart)
+      this.on('error', onError)
     })
   }
 

@@ -140,6 +140,11 @@ export async function runVitest(
     throw new Error(`Don't pass down "viteConfig" with "test" property. Use the rest of the first argument.`)
   }
 
+  // Don't let unrelated package.json / config edits made by other tests running
+  // in parallel force-rerun this test's watcher. Applied as a default here so a
+  // fixture config or an explicit `forceRerunTriggers` still takes precedence.
+  rest.forceRerunTriggers ??= []
+
   ;(viteConfig as any).test = rest
 
   try {
@@ -182,6 +187,23 @@ export async function runVitest(
       },
     }, {
       ...viteConfig,
+      plugins: [
+        ...(viteConfig.plugins ?? []),
+        // Spawning the worker is the dominant cost of these meta-tests (each `runVitest`
+        // boots a fresh Vitest). Default the spawned run to `threads`, which is cheaper
+        // to start than `forks`, especially on Windows. A `config` hook only fills the
+        // gap when nothing else set a pool, so an explicit `pool` (from `config` or the
+        // fixture's own config file) always wins. Browser runs are left alone since they
+        // don't execute in a node pool.
+        {
+          name: 'vitest:test-utils:default-pool',
+          config(config) {
+            if (config.test?.pool == null && !config.test?.browser?.enabled) {
+              return { test: { pool: 'threads' } }
+            }
+          },
+        },
+      ],
       server: {
         // we never need a websocket connection for the root config because it doesn't connect to the browser
         // browser mode uses a separate config that doesn't inherit CLI overrides
@@ -580,6 +602,9 @@ export function buildErrorTree(testModules: TestModule[], options?: BuildErrorTr
 
   function mapError(e: { message: string; diff?: string; stacks?: ParsedStack[] }) {
     let message = stripVTControlCharacters(e.message)
+    if (root) {
+      message = replaceRoot(message, root)
+    }
     if (options?.diff && e.diff) {
       message = [message, stripVTControlCharacters(e.diff)].join('\n')
     }
