@@ -132,6 +132,17 @@ export default ({ watch }) =>
         dir: 'dist',
         format: 'esm',
         chunkFileNames: 'chunks/[name].[hash].js',
+        manualChunks(id) {
+          // `tinyrainbow`'s default export is a single mutable color object whose
+          // `isColorSupported` flag and formatters are toggled at runtime (e.g.
+          // `disableDefaultColors()`). If it is inlined into several chunks each
+          // copy has its own object, so disabling colors on one no longer affects
+          // the others. Pin it to ONE shared chunk so every consumer in a process
+          // mutates the same instance.
+          if (/[\\/]tinyrainbow[\\/]/.test(id)) {
+            return 'tinyrainbow'
+          }
+        },
       },
       external,
       moduleContext: (id) => {
