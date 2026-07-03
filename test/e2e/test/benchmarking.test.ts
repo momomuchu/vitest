@@ -1034,6 +1034,60 @@ test('cross-project section is absent when no benchmark is perProject', async ()
   expect(stdout).not.toContain('Cross-Project Benchmark Comparison')
 })
 
+test('non-TTY default reporter still prints parent `describe` labels around nested benches (#10606)', async () => {
+  // https://github.com/vitest-dev/vitest/issues/10606 — in CI (non-TTY), the
+  // `describe` suite wrapping a bench is silently dropped from stdout while
+  // the bench row underneath still keeps its nested indentation, so the
+  // output looks flat/mis-indented instead of nested under its suite label.
+  const { stderr, stdout } = await runInlineTests(
+    {
+      'suite.bench.ts': /* ts */`
+        import { describe, test, inject } from 'vitest'
+        describe('my first suite', () => {
+          test('foo', async ({ bench }) => {
+            await bench('foo', () => {}).run(inject('options'))
+          })
+        })
+        describe('my second suite', () => {
+          test('foo', async ({ bench }) => {
+            await bench('foo', () => {}).run(inject('options'))
+          })
+        })
+`,
+    },
+    {
+      benchmark: { enabled: true },
+      reporters: [['default', { isTTY: false }]],
+      provide: { options: fastBenchOptions },
+    },
+  )
+  expect(stderr).toBe('')
+
+  const lines = stdout.split('\n')
+  const firstSuiteIdx = lines.findIndex(l => l.includes('my first suite'))
+  const secondSuiteIdx = lines.findIndex(l => l.includes('my second suite'))
+  // the nested test row is rendered as `<symbol> foo`, never as a bare `foo`
+  // (the benchmark data table also has a `foo` cell, but with no symbol prefix)
+  const benchRowIdxs = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^\s*\S+\s+foo\b/.test(line))
+    .map(({ index }) => index)
+
+  expect(firstSuiteIdx, `"my first suite" label missing from non-TTY output:\n${stdout}`).toBeGreaterThanOrEqual(0)
+  expect(secondSuiteIdx, `"my second suite" label missing from non-TTY output:\n${stdout}`).toBeGreaterThanOrEqual(0)
+  expect(benchRowIdxs, `nested bench rows not found in:\n${stdout}`).toHaveLength(2)
+
+  // each suite label must appear before its own nested bench row, in document order
+  expect(firstSuiteIdx).toBeLessThan(benchRowIdxs[0])
+  expect(secondSuiteIdx).toBeGreaterThan(benchRowIdxs[0])
+  expect(secondSuiteIdx).toBeLessThan(benchRowIdxs[1])
+
+  // and the bench row must be indented one level deeper than its suite label
+  const suiteIndent = lines[firstSuiteIdx].match(/^\s*/)![0].length
+  const benchIndent = lines[benchRowIdxs[0]].match(/^\s*/)![0].length
+  expect(benchIndent).toBeGreaterThan(suiteIndent)
+})
+
 test('`bench.compare` wraps multiple failed benchmarks in an AggregateError', async () => {
   await runPassingBench('aggregate.bench.ts', /* ts */`
     import { test, expect, inject } from 'vitest'

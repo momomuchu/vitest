@@ -55,6 +55,9 @@ export abstract class BaseReporter implements Reporter {
   private _filesInWatchMode = new Map<string, number>()
   private _timeStart = formatTimeString(new Date())
   private _perProjectBenchmarks = new Map<string, Map<string, TestBenchmarkTask>>()
+  // suites already printed for the module currently being rendered, so a
+  // lazily-printed parent-suite label (non-TTY compact rows) is not repeated
+  private _printedSuiteIds = new Set<string>()
 
   constructor(options: BaseOptions = {}) {
     this.isTTY = options.isTTY ?? isTTY
@@ -165,6 +168,10 @@ export abstract class BaseReporter implements Reporter {
     const originalLog = this.log.bind(this)
     this.log = (msg: string) => logs.push(msg)
 
+    // reset the per-module set that guards against printing the same parent
+    // suite label twice when several compact rows share a parent suite
+    this._printedSuiteIds.clear()
+
     const visit = (suiteState: TestSuiteState, children: TestCollection) => {
       for (const child of children) {
         if (child.type === 'suite') {
@@ -230,6 +237,16 @@ export abstract class BaseReporter implements Reporter {
     // aggregated in the cross-project section at the end of the run
     const inlineBenchmarks: TestBenchmark[] = benchmarks.filter(b => b.tasks.length > 0)
 
+    // In non-TTY / multi-file runs `renderSucceed` is off, so `printTestSuite`
+    // is skipped and parent `describe` labels are never emitted. Slow tests and
+    // inline benchmark rows are still printed though, which leaves them indented
+    // under no visible parent. Print the missing parent suites first so the
+    // nesting matches the TTY output. See #10606.
+    const isSlow = testResult.state !== 'failed' && duration > this.ctx.config.slowTestThreshold
+    if (!this.renderSucceed && (isSlow || inlineBenchmarks.length > 0)) {
+      this.printParentSuites(test)
+    }
+
     if (testResult.state === 'failed') {
       this.log(c.red(` ${padding}${taskFail} ${this.getTestName(test.task, separator)}`) + suffix)
     }
@@ -289,11 +306,35 @@ export abstract class BaseReporter implements Reporter {
       return
     }
 
+    this.renderSuiteLabel(testSuite)
+  }
+
+  private renderSuiteLabel(testSuite: TestSuite): void {
     const indentation = '  '.repeat(getIndentation(testSuite.task))
     const tests = Array.from(testSuite.children.allTests())
     const state = this.getStateSymbol(testSuite)
 
     this.log(` ${indentation}${state} ${testSuite.name} ${c.dim(`(${tests.length})`)}`)
+  }
+
+  // Print any not-yet-printed ancestor suite labels of `test`, top-down, so a
+  // compact row (slow test / inline bench) shown on the non-TTY path is nested
+  // under its `describe` labels the same way it is in TTY output. See #10606.
+  private printParentSuites(test: TestCase): void {
+    const suites: TestSuite[] = []
+    let parent: TestSuite | TestModule = test.parent
+    while (parent.type === 'suite') {
+      suites.unshift(parent)
+      parent = parent.parent
+    }
+
+    for (const suite of suites) {
+      if (this._printedSuiteIds.has(suite.task.id)) {
+        continue
+      }
+      this._printedSuiteIds.add(suite.task.id)
+      this.renderSuiteLabel(suite)
+    }
   }
 
   protected getTestName(test: Task, _separator?: string): string {
